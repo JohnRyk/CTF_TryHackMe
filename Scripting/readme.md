@@ -1,3 +1,8 @@
+https://tryhackme.com/room/scripting
+
+# [Easy] Base64
+
+
 # [Medium] Gotta Catch em All
 
 You need to write a script that connects to this webserver on the correct port, do an operation on a number and then move onto the next port. Start your original number at 0.
@@ -399,9 +404,242 @@ The script caught `1337`, then rode the rotation cleanly through all 34 ports:
 
 
 
+# [Hard] Encrypted Server Chit Chat
 
 
+## Breaking AES-GCM Over UDP — TryHackMe "Scripting (Hard)" Writeup
 
+> **Target:** `10.146.155.58` UDP port `4000`
+
+### Challenge Description
+
+A UDP server is running on port 4000. We are told to:
+
+1. Send a UDP packet with the payload `"hello"` to receive instructions.
+2. The server uses **AES-GCM** encryption.
+3. Recover the flag using the information the server hands back.
+
+The challenge drops a few breadcrumbs worth keeping in mind:
+
+* Network I/O is done in **bytes**.
+* PyCA's `cryptography` library takes its inputs as **bytes**.
+* AES-GCM produces a **ciphertext *and* an authentication tag**, and the server
+  sends them sequentially: *encrypted plaintext first, then the tag*.
+
+---
+
+### Reconnaissance — Talking to the Server
+
+The protocol is a simple three-step handshake. First we send `hello`:
+
+```text
+$ python3 solve.py
+[*] hello  -> You've connected to the super secret server,
+              send a packet with the payload ready to receive more information
+```
+
+Following the instruction, we send `ready` and get the gold:
+
+```text
+[*] ready  -> key:thisisaverysecretkeyl337 iv:secureivl337
+              to decrypt and find the flag that has a SHA256 checksum of
+              5d77f018d2bf777860548655d84d7382dc27d6ce816ede68f65d72621463d9da
+              send final in the next payload to receive all the encrypted flags
+```
+
+So we now have everything we need:
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| **Key** | `thisisaverysecretkeyl337` | 24 bytes → **AES-192** |
+| **IV / Nonce** | `secureivl337` | 12 bytes (the standard GCM nonce size) |
+| **Target SHA256** | `5d77f018...21463d9da` | The checksum of the *real* flag |
+
+Finally we send `final`, and the server blasts back **32 UDP packets**.
+
+---
+
+### Analysis — Spotting the Nonce Reuse
+
+When we print every packet in hex, a pattern jumps out immediately:
+
+```text
+Packet  1 | len= 13 | 68093ae9a389abce773a2cde1d
+Packet  2 | len= 16 | 53336efe7d78675a3cdbbc2874b6b6c1
+Packet  3 | len= 16 | 9f61571ece8099b10e69f49f7e83ca8a
+Packet  4 | len= 13 | 68093ae9a99dbad2612d47c21d
+Packet  5 | len= 13 | 68093ae9bf94ccd368352bcf1d
+Packet  6 | len= 16 | 208ee28eb1335615cca6d2b112c4b201
+...
+```
+
+Half the packets are **13 bytes** (plus one 28-byte one) and all of them start
+with the identical prefix `68093ae9`. The other half are **16 bytes** with
+random-looking data.
+
+This is the smoking gun for **AES-GCM nonce reuse**. GCM is built on CTR mode,
+so `ciphertext = plaintext XOR keystream`. When the **same key + nonce** encrypt
+multiple plaintexts, the *same keystream* is reused, and every plaintext that
+shares a prefix produces a ciphertext that shares a prefix.
+
+All of the flags are `THM{...}`, so:
+
+```text
+keystream[0:4] = ciphertext[0:4] XOR "THM{"
+               = 68 09 3a e9  XOR  54 48 4d 7b
+               = 3c 41 77 92
+```
+
+That explains why every ciphertext begins with `68093ae9`.
+
+### Splitting ciphertexts from tags
+
+We now know how to classify the 32 packets:
+
+* **Ciphertexts** → start with `68093ae9` (16 of them).
+* **Tags** → the remaining 16-byte packets (16 of them).
+
+Because UDP does **not** guarantee ordering, the packets arrived shuffled, so we
+can't blindly assume "the next packet is the matching tag". Instead we
+brute-force every `(ciphertext, tag)` pairing and let AES-GCM's built-in
+authentication tell us which pairs are valid.
+
+---
+
+### The Solve Script
+
+```python
+#!/usr/bin/env python3
+"""
+CTF solver for the AES-GCM nonce-reuse UDP challenge.
+
+Server: 10.146.155.58:4000 (UDP)
+Protocol:
+    1. send "hello"  -> greeting
+    2. send "ready"  -> key, iv (nonce) and the SHA256 checksum of the real flag
+    3. send "final"  -> the server streams back many encrypted flags, each as a
+                        pair of UDP packets: ciphertext followed by tag.
+
+The server reuses the same key+nonce for every flag, but the real flag is the
+one whose decrypted plaintext has the advertised SHA256 checksum. UDP re-ordering
+scrambles which ciphertext belongs to which tag, so we brute-force every
+(ciphertext, tag) pair, let AES-GCM authenticate each one, and keep the plaintext
+whose SHA256 matches.
+"""
+
+import hashlib
+import re
+import socket
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+SERVER_ADDR = ("10.146.155.58", 4000)
+TARGET_SHA256 = "5d77f018d2bf777860548655d84d7382dc27d6ce816ede68f65d72621463d9da"
+
+
+def collect_packets():
+    """Run the hello/ready/final handshake and gather every UDP packet."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(15)
+    try:
+        sock.sendto(b"hello", SERVER_ADDR)
+        greeting = sock.recvfrom(65535)[0]
+        print("[*] hello  ->", greeting.decode("utf-8", "replace"))
+
+        sock.sendto(b"ready", SERVER_ADDR)
+        ready = sock.recvfrom(65535)[0]
+        print("[*] ready  ->", ready.decode("utf-8", "replace"))
+
+        sock.sendto(b"final", SERVER_ADDR)
+
+        packets = []
+        while True:
+            try:
+                packets.append(sock.recvfrom(65535)[0])
+            except socket.timeout:
+                break
+        return packets, ready
+    finally:
+        sock.close()
+
+
+def main():
+    packets, ready = collect_packets()
+
+    # Parse the key and iv advertised by the server.
+    text = ready.decode("utf-8", "replace")
+    key = re.search(r"key:(\S+)", text).group(1).encode()
+    iv = re.search(r"iv:(\S+)", text).group(1).encode()
+    print(f"\n[*] key  = {key!r} ({len(key)} bytes -> AES-{len(key)*8})")
+    print(f"[*] iv   = {iv!r} ({len(iv)} bytes)")
+    print(f"[*] target SHA256 = {TARGET_SHA256}")
+
+    # Ciphertexts all start with the same 4 bytes (they encrypt "THM{" under a
+    # reused nonce), so we can split the stream into ciphertexts and tags even
+    # though UDP scrambled their order.
+    prefix = packets[0][:4]
+    ciphertexts = [p for p in packets if p[:4] == prefix]
+    tags = [p for p in packets if p[:4] != prefix]
+    print(f"\n[*] {len(ciphertexts)} ciphertexts, {len(tags)} candidate tags")
+
+    aesgcm = AESGCM(key)
+    candidates = []
+
+    for ct in ciphertexts:
+        for tag in tags:
+            try:
+                pt = aesgcm.decrypt(iv, ct + tag, None)
+            except Exception:
+                continue  # tag did not authenticate -> wrong pairing
+            candidates.append(pt)
+
+    print(f"[*] authenticated {len(candidates)} plaintext(s):\n")
+    for pt in candidates:
+        digest = hashlib.sha256(pt).hexdigest()
+        marker = "  <-- MATCH" if digest == TARGET_SHA256 else ""
+        print(f"    {pt.decode('utf-8', 'replace')!r}  sha256={digest}{marker}")
+
+    flag = next(
+        pt for pt in candidates if hashlib.sha256(pt).hexdigest() == TARGET_SHA256
+    )
+    print(f"\n[+] FLAG: {flag.decode()}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+### How It Works
+
+1. **UDP handshake** — `socket.SOCK_DGRAM` lets us fire off the `hello` →
+   `ready` → `final` payloads and read back the raw bytes the server emits.
+2. **Parse key/iv** — a quick regex pulls `thisisaverysecretkeyl337` and
+   `secureivl337` straight out of the `ready` reply (everything is `bytes`,
+   matching what `AESGCM` expects).
+3. **Separate ciphertexts and tags** — thanks to the nonce-reuse signature,
+   every ciphertext shares the `68093ae9` prefix; the rest are 16-byte tags.
+4. **Authenticate + decrypt** — `AESGCM.decrypt(nonce, ciphertext + tag, data=None)`
+   verifies the GHASH tag itself and raises `InvalidTag` on a mismatch, so it
+   doubles as an oracle that tells us which ciphertext belongs to which tag —
+   no fragile ordering assumptions required.
+5. **Pick the winner** — of the 16 successfully decrypted flags, exactly one has
+   a SHA256 equal to the advertised checksum.
+
+---
+
+### Key Takeaways
+
+* **Never reuse a nonce in AES-GCM.** GCM is CTR mode + a MAC; reusing the nonce
+  leaks the keystream (letting you spot shared plaintext prefixes) and, far more
+  seriously, lets an attacker recover the GHASH authentication key and forge tags.
+* **UDP is unordered.** The challenge deliberately interleaves ciphertexts and
+  tags, so relying on packet order is a trap — rely on the cryptography itself
+  (tag verification) to match them up.
+* **Work in bytes end-to-end.** The challenge's hints are literal: sockets send
+  bytes, `cryptography` wants bytes, and the SHA256 checksum is even delivered
+  as raw bytes in the middle of a text payload.
 
 
 
