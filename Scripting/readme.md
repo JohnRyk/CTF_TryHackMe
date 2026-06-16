@@ -2,6 +2,116 @@ https://tryhackme.com/room/scripting
 
 # [Easy] Base64
 
+## Base64 × 50
+
+> **Challenge:** A file has been base64-encoded **50 times**. Write a script to retrieve the flag. Try it in **both Bash and Python**.
+
+### 1. Reconnaissance
+
+We are given a single file:
+
+```bash
+$ ls -lh
+-rwxrw-rw- 1 kali kali 33M b64_1550406728131.txt
+```
+
+A quick peek at the start of the file shows a wall of ASCII letters and digits — the
+classic look of a base64 string:
+
+```bash
+$ head -c 80 b64_1550406728131.txt
+Vm0wd2QyUXlVWGxWV0d4V1YwZDRWMVl3WkRSV01WbDNXa1JTVjAxV2JETlhhMUpUVmpBeFYySkVUbGhoTVVw...
+```
+
+The challenge statement tells us this has been base64-encoded **50 times**, so the
+solution is simply: decode it 50 times in a loop.
+
+The hint gives us the exact algorithm to implement:
+
+1. Read input from the file.
+2. Decode it with base64.
+3. Do the decode in a loop (50 iterations).
+
+
+### Python Solution
+
+```python
+#!/usr/bin/env python3
+"""
+Decode a file that has been base64-encoded 50 times.
+"""
+import base64
+
+INPUT_FILE = "b64_1550406728131.txt"
+ROUNDS = 50
+
+# 1. read input from the file (binary mode -> bytes)
+with open(INPUT_FILE, "rb") as fh:
+    data: bytes = fh.read()
+
+# 2 + 3. decode in a loop
+for _ in range(ROUNDS):
+    data = base64.b64decode(data)
+
+print(data.decode())
+```
+
+#### How it works
+
+| Step | What happens |
+|------|--------------|
+| `open(..., "rb")` | Read the raw bytes (base64 is text, but reading bytes lets `base64.b64decode` work directly). |
+| `base64.b64decode(data)` | One round of decoding. |
+| `for _ in range(50)` | Repeat the decode 50 times — peeling one layer of encoding off each iteration. |
+| `data.decode()` | Turn the final bytes into a printable string. |
+
+### Bash Solution
+
+For completeness (and because the challenge asks for it), the same logic in pure
+Bash using the `base64` coreutil:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+INPUT_FILE="b64_1550406728131.txt"
+ROUNDS=50
+
+# 1. read input from the file
+data="$(cat "$INPUT_FILE")"
+
+# 2 + 3. decode in a loop
+for _ in $(seq 1 "$ROUNDS"); do
+    data="$(printf '%s' "$data" | base64 -d)"
+done
+
+printf '%s\n' "$data"
+```
+
+#### Bash vs Python — a note on large inputs
+
+Each base64 layer roughly **quadruples** the size of its input (3 bytes → 4 chars).
+With 50 layers the file balloons to **~33 MB**, which means:
+
+- **Python** chews through it in well under a second — `base64.b64decode` works on
+  the whole buffer in C.
+- **Bash** is also fast here, but note we are piping through a subshell
+  `$(... | base64 -d)` 50 times. For even bigger payloads you would want to
+  avoid the `$(...)` round-trips and write to temp files instead.
+
+### 7. Lessons Learned
+
+- **Loops are the whole game.** When a challenge says "X happened N times", a
+  simple loop over the operation is usually the intended solution — don't
+  over-think it.
+- **Standard library is powerful.** Python's `base64` module needs no
+  installation and handles multi-megabyte buffers efficiently.
+- **Always isolate your environment.** Even though this challenge needs no
+  third-party packages, running everything inside a `venv` keeps your system
+  clean and makes the solution reproducible.
+- **Inspect raw bytes when in doubt.** A quick `repr()` confirms whether that
+  trailing `=` belongs to the flag or is an artifact.
+
 
 # [Medium] Gotta Catch em All
 
