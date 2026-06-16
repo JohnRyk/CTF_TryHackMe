@@ -152,8 +152,6 @@ python3 exp_ctf_2.py $(curl -s 'http://10.201.6.34:3010/' | egrep -o 'onPort">.*
 > **Challenge:** Connect to a web server, hop from port to port applying arithmetic
 > operations to a running total (starting at `0`), and stop when the response is
 > `STOP` or you reach port `9765`. Each port is only *live* for ~4 seconds.
->
-> **Final flag / answer:** `344769.12`
 
 ---
 
