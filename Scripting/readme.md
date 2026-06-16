@@ -160,7 +160,7 @@ python3 exp_ctf_2.py $(curl -s 'http://10.201.6.34:3010/' | egrep -o 'onPort">.*
 
 ---
 
-## 1. The brief
+### 1. The brief
 
 The landing page at `http://10.144.157.58:3010` explains the game:
 
@@ -180,9 +180,9 @@ The suggested approach is the Python `socket` library:
 
 ---
 
-## 2. Reconnaissance — figuring out the mechanics
+### 2. Reconnaissance — figuring out the mechanics
 
-### 2.1 Are these HTTP servers or raw TCP?
+#### 2.1 Are these HTTP servers or raw TCP?
 
 I first tried a plain `socket.connect()` to port `1337`. The connect succeeded (when
 the port was live) but `recv()` **timed out** — the server was waiting for *us* to speak
@@ -205,7 +205,7 @@ add 900 23456
 So each port is a tiny **Werkzeug/Flask** HTTP server whose body is exactly
 `<operation> <number> <next_port>`.
 
-### 2.2 How does the "live window" actually behave?
+#### 2.2 How does the "live window" actually behave?
 
 This is the real twist. I scraped the landing page's
 `<a id="onPort">…</a>` element over a couple of minutes and logged which port was
@@ -233,7 +233,7 @@ Two crucial facts jumped out:
   chain the full cycle is **>200 seconds**, which is why a naive "wait for 1337"
   loop with a 2-minute timeout silently failed.
 
-### 2.3 The winning strategy
+#### 2.3 The winning strategy
 
 Because the live window *walks the chain*, if I can grab `1337` during its window and
 then immediately follow each `next_port`, I ride the wave: by the time I finish reading
@@ -242,7 +242,7 @@ sync.
 
 ---
 
-## 3. The solver
+### 3. The solver
 
 ```python
 #!/usr/bin/env python3
@@ -342,7 +342,7 @@ if __name__ == "__main__":
 ```
 ---
 
-## 4. The run
+### 4. The run
 
 The script caught `1337`, then rode the rotation cleanly through all 34 ports:
 
@@ -386,7 +386,7 @@ The script caught `1337`, then rode the rotation cleanly through all 34 ports:
 
 ---
 
-## 5. Lessons learned
+### 5. Lessons learned
 
 1. **Read the hint literally.** The challenge *said* use the `socket` library, and the
    ports really are plain TCP endpoints — but they speak HTTP. A first `GET /` request
@@ -407,7 +407,7 @@ The script caught `1337`, then rode the rotation cleanly through all 34 ports:
 # [Hard] Encrypted Server Chit Chat
 
 
-## Breaking AES-GCM Over UDP — TryHackMe "Scripting (Hard)" Writeup
+## Breaking AES-GCM Over UDP
 
 > **Target:** `10.146.155.58` UDP port `4000`
 
